@@ -7,6 +7,8 @@ defmodule Web.GitHubWebhookController do
 
   alias Data.{Opportunities, Projects}
 
+  plug :authorize
+
   def create(conn, %{"action" => action, "issue" => issue} = issue_event)
     when is_map(issue) and action in ["closed", "labeled", "opened", "reopened"] do
 
@@ -32,29 +34,42 @@ defmodule Web.GitHubWebhookController do
   defp attributes(issue, %{id: project_id}) do
     %{
       closed_at: issue["closed_at"],
-      level:  level_from_labels(issue),
+      level:  label_mapping(issue, level_mapping()),
       project_id: project_id,
       title: issue["title"],
+      type:  label_mapping(issue, type_mapping()),
       url: issue["html_url"]
     }
   end
 
-  defp label_mapping, do: Application.get_env(:web, :level_label_mapping)
+  defp authorize(%{params: %{"api_token" => api_token}} = conn, _opts) do
+    case Projects.get(%{api_token: api_token}) do
+      nil -> thank_you(conn)
+      _match -> conn
+    end
+  end
 
-  defp level_from_labels(%{"labels" => []}), do: nil
-  defp level_from_labels(%{"labels" => labels}) do
-    labels = Enum.map(labels, &Map.get(&1, "name"))
-    mapping = Enum.find(label_mapping(), fn {_, mappings} -> length(mappings -- (mappings -- labels)) != 0 end)
+  defp authorize(conn, _opts), do: thank_you(conn)
+
+  defp label_mapping(%{"labels" => []}, _mapping), do: nil
+  defp label_mapping(%{"labels" => labels}, mapping) do
+    labels = Enum.map(labels, fn (label) -> label |> Map.get("name") |> String.downcase end)
+    mapping = Enum.find(mapping, fn {_, mappings} -> length(mappings -- (mappings -- labels)) != 0 end)
 
     case mapping do
-      {level, _} -> level
+      {label, _} -> label
       _ -> nil
     end
   end
+
+  defp level_mapping, do: Application.get_env(:web, :level_label_mapping)
 
   defp thank_you(conn) do
     conn
     |> Plug.Conn.put_resp_header("content-type", "application/json")
     |> send_resp(201, Poison.encode!(%{msg: "thank you"}))
+    |> halt
   end
+
+  defp type_mapping, do: Application.get_env(:web, :type_label_mapping)
 end
